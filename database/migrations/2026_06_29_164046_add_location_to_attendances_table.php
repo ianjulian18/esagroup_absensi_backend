@@ -11,10 +11,9 @@ return new class extends Migration
      */
     public function up(): void
     {
-       Schema::table('attendances', function (Blueprint $table) {
-            // Menambahkan kolom koordinat setelah kolom status
-            $table->string('latitude')->nullable()->after('status');
-            $table->string('longitude')->nullable()->after('latitude');
+        Schema::table('attendances', function (Blueprint $table) {
+        $table->string('latitude')->nullable();
+        $table->string('longitude')->nullable();
         });
     }
 

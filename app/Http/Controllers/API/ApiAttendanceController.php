@@ -13,7 +13,7 @@ class ApiAttendanceController extends Controller
 {
     // RUMUS PENGHITUNG JARAK (Haversine Formula)
     private function calculateDistance($lat1, $lon1, $lat2, $lon2) {
-        $earthRadius = 6371000; // Radius bumi dalam satuan meter
+        $earthRadius = 6371000; // Radius bumi dalam meter
 
         $latFrom = deg2rad($lat1);
         $lonFrom = deg2rad($lon1);
@@ -29,7 +29,7 @@ class ApiAttendanceController extends Controller
         return $angle * $earthRadius;
     }
 
-    // 1. FUNGSI LOGIN
+    // 1. FUNGSI LOGIN (SUDAH DINAMIS)
     public function login(Request $request)
     {
         $request->validate([
@@ -37,7 +37,8 @@ class ApiAttendanceController extends Controller
             'password' => 'required',
         ]);
 
-        $user = User::where('email', $request->email)->first();
+        // Eager load relasi 'location' agar data lokasi kantor karyawan ikut terambil
+        $user = User::with('location')->where('email', $request->email)->first();
 
         if (! $user || ! Hash::check($request->password, $user->password)) {
             return response()->json(['message' => 'Email atau password salah.'], 401);
@@ -56,42 +57,48 @@ class ApiAttendanceController extends Controller
                 'id' => $user->id,
                 'name' => $user->name,
                 'email' => $user->email,
-                'role' => $user->role ?? 'karyawan'
+                'role' => $user->role ?? 'karyawan',
+                // Kirim data lokasi dinamis ke Flutter. Jika belum disetting HRD, pakai fallback default
+                'office_latitude' => $user->location ? (float)$user->location->latitude : -7.2356163,
+                'office_longitude' => $user->location ? (float)$user->location->longitude : 112.73303,
+                'max_radius' => $user->location ? (float)$user->location->radius : 50.0,
+                'is_location_locked' => $user->is_location_locked ?? 1,
             ]
         ]);
     }
 
-    // 2. FUNGSI PROSES ABSEN (Dengan Batasan Jarak)
+    // 2. FUNGSI PROSES ABSEN (GEOFENCING SUDAH DINAMIS)
     public function scan(Request $request)
     {
-        // 1. Validasi Input (Wajib kirim kordinat dan file foto)
         $request->validate([
             'latitude' => 'required|string',
             'longitude' => 'required|string',
             'photo' => 'required|image|max:2048', 
         ]);
 
-        // 2. CEK RADAR JARAK (GEOFENCING)
-        $officeLat = -7.2356163;  // ⚠️ Ganti dengan Latitude asli kantormu
-        $officeLon = 112.73303; // ⚠️ Ganti dengan Longitude asli kantormu
-        $maxRadius = 150; // Maksimal 150 meter
+        $user = $request->user();
+        
+        // Pastikan relasi location terpanggil untuk validasi backend
+        $user->load('location');
+
+        // Tarik lokasi dinamis karyawan untuk validasi jarak di backend
+        $officeLat = $user->location ? (float)$user->location->latitude : -7.2356163;
+        $officeLon = $user->location ? (float)$user->location->longitude : 112.73303;
+        $maxRadius = $user->location ? (float)$user->location->radius : 50.0;
 
         $distance = $this->calculateDistance($request->latitude, $request->longitude, $officeLat, $officeLon);
 
         if ($distance > $maxRadius) {
             return response()->json([
-                'message' => 'Anda berada di luar jangkauan kantor! Jarak Anda: ' . round($distance) . ' meter.'
+                'message' => 'Anda berada di luar jangkauan kantor! Jarak Anda: ' . round($distance) . ' meter dari batas ' . $maxRadius . ' meter.'
             ], 403);
         }
 
-        // 3. PROSES SIMPAN FOTO KE SERVER
         $photoPath = null;
         if ($request->hasFile('photo')) {
             $photoPath = $request->file('photo')->store('attendances', 'public');
         }
 
-        // 4. PROSES SIMPAN ABSENSI KE DATABASE
-        $user = $request->user();
         $today = now()->toDateString();
         $timeNow = now()->toTimeString();
 
@@ -111,7 +118,7 @@ class ApiAttendanceController extends Controller
                 'status' => $status,
                 'latitude' => $request->latitude,
                 'longitude' => $request->longitude,
-                'photo_in' => $photoPath, // Simpan foto masuk
+                'photo_in' => $photoPath,
             ]);
 
             return response()->json(['message' => 'Berhasil absen masuk!', 'data' => $newAttendance], 201);
@@ -121,9 +128,9 @@ class ApiAttendanceController extends Controller
         if ($attendance && $attendance->clock_out === null) {
             $attendance->update([
                 'clock_out' => $timeNow,
-                'latitude' => $request->latitude, // Perbarui kordinat saat pulang
+                'latitude' => $request->latitude,
                 'longitude' => $request->longitude,
-                'photo_out' => $photoPath, // Simpan foto pulang
+                'photo_out' => $photoPath,
             ]);
 
             return response()->json(['message' => 'Berhasil absen pulang! Hati-hati di jalan.', 'data' => $attendance], 200);
@@ -132,12 +139,11 @@ class ApiAttendanceController extends Controller
         return response()->json(['message' => 'Kamu sudah menyelesaikan absensi untuk hari ini.'], 400);
     }
 
-    // 3. FUNGSI BARU: TARIK DATA RIWAYAT ABSENSI KARYAWAN
+    // 3. FUNGSI TARIK DATA RIWAYAT ABSENSI
     public function history(Request $request)
     {
         $user = $request->user();
         
-        // Ambil riwayat absen karyawan yang login (30 hari terakhir agar database tidak berat)
         $history = Attendance::where('user_id', $user->id)
             ->orderBy('date', 'desc')
             ->limit(30)

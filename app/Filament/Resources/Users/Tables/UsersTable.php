@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Users\Tables;
 
+// PERBAIKAN NAMESPACE: Menggunakan Tables\Actions
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
@@ -31,6 +32,19 @@ class UsersTable
                     })
                     ->label('Jabatan'),
 
+                // --- TAMBAHAN BARU: Menampilkan master data di tabel ---
+                TextColumn::make('location.name')
+                    ->label('Penempatan')
+                    ->badge()
+                    ->color('info')
+                    ->sortable(),
+
+                TextColumn::make('workingHour.name')
+                    ->label('Jam Kerja')
+                    ->badge()
+                    ->color('success')
+                    ->sortable(),
+
                 IconColumn::make('is_resign')
                     ->boolean()
                     ->label('Status Resign'),
@@ -43,8 +57,8 @@ class UsersTable
             ])
             ->bulkActions([
                 BulkActionGroup::make([
-                    DeleteBulkAction::make(),
-                ]),
-            ]);
+                DeleteBulkAction::make(),
+            ]),
+        ]);
     }
 }
