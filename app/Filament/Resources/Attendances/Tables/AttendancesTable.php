@@ -48,12 +48,15 @@ class AttendancesTable
 
                 ImageColumn::make('photo_in')
                     ->label('Foto Masuk')
+                    ->disk('public')
                     ->circular() // Membuat foto menjadi bulat
                     ->defaultImageUrl(url('/images/no-image.png')), // Opsional jika foto kosong
 
                 ImageColumn::make('photo_out')
                     ->label('Foto Pulang')
-                    ->circular(),
+                    ->disk('public')
+                    ->circular()
+                    ->defaultImageUrl(url('/images/no-image.png')), // Opsional jika foto kosong
 
                 TextColumn::make('latitude')
                     ->label('Lat')

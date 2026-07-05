@@ -16,6 +16,16 @@ class UsersTable
     {
         return $table
             ->columns([
+                TextColumn::make('nik')
+                    ->label('NIK')
+                    ->searchable()
+                    ->toggleable(isToggledHiddenByDefault: true),
+
+                TextColumn::make('nip')
+                    ->label('NIP')
+                    ->searchable()
+                    ->toggleable(isToggledHiddenByDefault: true),
+
                 TextColumn::make('name')
                     ->label('Nama')
                     ->searchable(),

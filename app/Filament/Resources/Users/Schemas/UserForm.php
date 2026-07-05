@@ -18,26 +18,39 @@ class UserForm
                     ->label('Nama Lengkap')
                     ->required()
                     ->maxLength(255),
-
+                
                 TextInput::make('email')
                     ->email()
                     ->required()
                     ->maxLength(255),
 
+                // --- TAMBAHAN BARU: NIK & NIP ---
+                TextInput::make('nik')
+                    ->label('NIK (Nomor Induk Kependudukan)')
+                    ->numeric()
+                    ->unique(ignoreRecord: true)
+                    ->maxLength(255),
+
+                TextInput::make('nip')
+                    ->label('NIP (Nomor Induk Pegawai)')
+                    ->unique(ignoreRecord: true)
+                    ->maxLength(255),
+                // --------------------------------
+
                 TextInput::make('password')
                     ->password()
                     ->label('Password')
-                    ->required(fn (string $context): bool => $context === 'create')
-                    ->minLength(6)
+                    ->required(fn (string $operation): bool => $operation === 'create')
+                    ->minLength(8)
                     ->confirmed()
-                    ->dehydrateStateUsing(fn (string $state): string => Hash::make($state))
-                    ->dehydrated(fn (?string $state): bool => filled($state)),
+                    ->dehydrated(fn (?string $state) => filled($state))
+                    ->dehydrateStateUsing(fn (string $state): string => Hash::make($state)),
 
                 TextInput::make('password_confirmation')
                     ->password()
                     ->label('Konfirmasi Password')
-                    ->required(fn (string $context): bool => $context === 'create')
-                    ->minLength(6)
+                    ->required(fn (string $operation): bool => $operation === 'create')
+                    ->minLength(8)
                     ->dehydrated(false),
 
                 Select::make('role')
@@ -49,33 +62,21 @@ class UserForm
                     ->required()
                     ->default('karyawan'),
 
-                Toggle::make('is_resign')
-                    ->label('Tandai Karyawan Resign')
-                    ->default(false),
-
-                // --- TAMBAHAN BARU ---
-                // Dipasang langsung tanpa pembungkus agar terhindar dari Error Class Not Found
                 Select::make('location_id')
                     ->relationship('location', 'name')
-                    ->label('Penempatan Kantor')
-                    ->searchable()
-                    ->preload()
-                    ->visible(fn (string $context): bool => $context === 'edit') // HANYA TAMPIL SAAT EDIT
-                    ->required(fn (string $context): bool => $context === 'edit'),
+                    ->label('Penempatan Cabang/Lokasi'),
 
                 Select::make('working_hour_id')
                     ->relationship('workingHour', 'name')
-                    ->label('Shift Jam Kerja')
-                    ->searchable()
-                    ->preload()
-                    ->visible(fn (string $context): bool => $context === 'edit') // HANYA TAMPIL SAAT EDIT
-                    ->required(fn (string $context): bool => $context === 'edit'),
+                    ->label('Jam Kerja (Shift)'),
 
                 Toggle::make('is_location_locked')
                     ->label('Kunci Lokasi (Geofencing)')
-                    ->default(true)
-                    ->helperText('Jika aktif, karyawan HANYA bisa absen di dalam radius kantor penempatannya.')
-                    ->visible(fn (string $context): bool => $context === 'edit'), // HANYA TAMPIL SAAT EDIT
+                    ->default(true),
+
+                Toggle::make('is_resign')
+                    ->label('Tandai Karyawan Resign')
+                    ->default(false),
             ]);
     }
 }

@@ -13,7 +13,7 @@ class ApiAttendanceController extends Controller
 {
     // RUMUS PENGHITUNG JARAK (Haversine Formula)
     private function calculateDistance($lat1, $lon1, $lat2, $lon2) {
-        $earthRadius = 6371000; // Radius bumi dalam meter
+        $earthRadius = 6371000; // Radius bumi dalam satuan meter
 
         $latFrom = deg2rad($lat1);
         $lonFrom = deg2rad($lon1);
@@ -29,21 +29,28 @@ class ApiAttendanceController extends Controller
         return $angle * $earthRadius;
     }
 
-    // 1. FUNGSI LOGIN (SUDAH DINAMIS)
+    // 1. FUNGSI LOGIN (Bisa pakai Email, NIK, atau NIP)
     public function login(Request $request)
     {
+        // Validasi diubah: email diubah menjadi string (bukan format @mail) agar NIK/NIP bisa masuk
         $request->validate([
-            'email' => 'required|email',
+            'email' => 'required|string',
             'password' => 'required',
         ]);
 
-        // Eager load relasi 'location' agar data lokasi kantor karyawan ikut terambil
-        $user = User::with('location')->where('email', $request->email)->first();
+        // Cerdas mencari user: Cocokkan dengan Email, ATAU NIK, ATAU NIP
+        $user = User::with('location')
+            ->where('email', $request->email)
+            ->orWhere('nik', $request->email)
+            ->orWhere('nip', $request->email)
+            ->first();
 
+        // Cek kecocokan password
         if (! $user || ! Hash::check($request->password, $user->password)) {
-            return response()->json(['message' => 'Email atau password salah.'], 401);
+            return response()->json(['message' => 'Email/NIK/NIP atau password salah.'], 401);
         }
 
+        // Cek proteksi karyawan resign
         if ($user->is_resign == 1) { 
             return response()->json(['message' => 'Maaf, Anda sudah tidak bekerja lagi.'], 403); 
         }
@@ -57,8 +64,9 @@ class ApiAttendanceController extends Controller
                 'id' => $user->id,
                 'name' => $user->name,
                 'email' => $user->email,
+                'nik' => $user->nik,
+                'nip' => $user->nip,
                 'role' => $user->role ?? 'karyawan',
-                // Kirim data lokasi dinamis ke Flutter. Jika belum disetting HRD, pakai fallback default
                 'office_latitude' => $user->location ? (float)$user->location->latitude : -7.2356163,
                 'office_longitude' => $user->location ? (float)$user->location->longitude : 112.73303,
                 'max_radius' => $user->location ? (float)$user->location->radius : 50.0,
@@ -67,9 +75,10 @@ class ApiAttendanceController extends Controller
         ]);
     }
 
-    // 2. FUNGSI PROSES ABSEN (GEOFENCING SUDAH DINAMIS)
+    // 2. FUNGSI PROSES ABSEN (GEOFENCING DINAMIS)
     public function scan(Request $request)
     {
+        // 1. Validasi Input (Wajib kirim kordinat dan file foto)
         $request->validate([
             'latitude' => 'required|string',
             'longitude' => 'required|string',
@@ -86,6 +95,7 @@ class ApiAttendanceController extends Controller
         $officeLon = $user->location ? (float)$user->location->longitude : 112.73303;
         $maxRadius = $user->location ? (float)$user->location->radius : 50.0;
 
+        // 2. CEK RADAR JARAK
         $distance = $this->calculateDistance($request->latitude, $request->longitude, $officeLat, $officeLon);
 
         if ($distance > $maxRadius) {
@@ -94,11 +104,13 @@ class ApiAttendanceController extends Controller
             ], 403);
         }
 
+        // 3. PROSES SIMPAN FOTO KE SERVER
         $photoPath = null;
         if ($request->hasFile('photo')) {
             $photoPath = $request->file('photo')->store('attendances', 'public');
         }
 
+        // 4. PROSES SIMPAN ABSENSI KE DATABASE
         $today = now()->toDateString();
         $timeNow = now()->toTimeString();
 
@@ -118,7 +130,7 @@ class ApiAttendanceController extends Controller
                 'status' => $status,
                 'latitude' => $request->latitude,
                 'longitude' => $request->longitude,
-                'photo_in' => $photoPath,
+                'photo_in' => $photoPath, // Simpan foto masuk
             ]);
 
             return response()->json(['message' => 'Berhasil absen masuk!', 'data' => $newAttendance], 201);
@@ -128,9 +140,9 @@ class ApiAttendanceController extends Controller
         if ($attendance && $attendance->clock_out === null) {
             $attendance->update([
                 'clock_out' => $timeNow,
-                'latitude' => $request->latitude,
+                'latitude' => $request->latitude, // Perbarui kordinat saat pulang
                 'longitude' => $request->longitude,
-                'photo_out' => $photoPath,
+                'photo_out' => $photoPath, // Simpan foto pulang
             ]);
 
             return response()->json(['message' => 'Berhasil absen pulang! Hati-hati di jalan.', 'data' => $attendance], 200);
@@ -144,7 +156,9 @@ class ApiAttendanceController extends Controller
     {
         $user = $request->user();
         
-        $history = Attendance::where('user_id', $user->id)
+        // Ambil riwayat absen karyawan yang login (30 hari terakhir agar database tidak berat)
+        $history = Attendance::with(['visits','user.location'])
+            -> where('user_id', $user->id)
             ->orderBy('date', 'desc')
             ->limit(30)
             ->get();
@@ -153,5 +167,79 @@ class ApiAttendanceController extends Controller
             'message' => 'Berhasil mengambil riwayat',
             'data' => $history
         ], 200);
+    }
+
+    // --- FUNGSI BARU: VISIT IN ---
+    public function visitIn(Request $request)
+    {
+        $request->validate([
+            'latitude' => 'required|string',
+            'longitude' => 'required|string',
+            'photo' => 'required|image|max:2048',
+            'location_name' => 'required|string',
+        ]);
+
+        $user = $request->user();
+        $today = now()->toDateString();
+        $timeNow = now()->toTimeString();
+
+        $attendance = Attendance::where('user_id', $user->id)->where('date', $today)->first();
+
+        // Cek aturan alur absen
+        if (!$attendance) {
+            return response()->json(['message' => 'Anda harus Check-In terlebih dahulu sebelum melakukan Visit.'], 403);
+        }
+        if ($attendance->clock_out !== null) {
+            return response()->json(['message' => 'Anda sudah Check-Out. Sesi visit hari ini telah ditutup.'], 403);
+        }
+
+        $activeVisit = $attendance->visits()->where('status', 'in_progress')->first();
+        if ($activeVisit) {
+            return response()->json(['message' => 'Selesaikan dulu visit di: ' . $activeVisit->location_name], 403);
+        }
+
+        $photoPath = $request->file('photo')->store('visits', 'public');
+
+        $visit = $attendance->visits()->create([
+            'visit_type' => 'store',
+            'location_name' => $request->location_name,
+            'visit_in' => $timeNow,
+            'latitude_in' => $request->latitude,
+            'longitude_in' => $request->longitude,
+            'photo_in' => $photoPath,
+            'status' => 'in_progress'
+        ]);
+
+        return response()->json(['message' => 'Berhasil Visit In di ' . $request->location_name, 'data' => $visit], 201);
+    }
+
+    // --- FUNGSI BARU: VISIT OUT ---
+    public function visitOut(Request $request)
+    {
+        $request->validate([
+            'latitude' => 'required|string',
+            'longitude' => 'required|string',
+            'photo' => 'required|image|max:2048',
+            'visit_id' => 'required|exists:visits,id',
+        ]);
+
+        $timeNow = now()->toTimeString();
+        $visit = \App\Models\Visit::find($request->visit_id);
+
+        if ($visit->status === 'completed') {
+            return response()->json(['message' => 'Visit ini sudah diselesaikan sebelumnya.'], 400);
+        }
+
+        $photoPath = $request->file('photo')->store('visits', 'public');
+
+        $visit->update([
+            'visit_out' => $timeNow,
+            'latitude_out' => $request->latitude,
+            'longitude_out' => $request->longitude,
+            'photo_out' => $photoPath,
+            'status' => 'completed'
+        ]);
+
+        return response()->json(['message' => 'Visit Out berhasil. Durasi visit tercatat.', 'data' => $visit], 200);
     }
 }
