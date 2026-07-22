@@ -21,7 +21,7 @@ class UserResource extends Resource
     // Fungsi mutlak: Apakah menu ini boleh dilihat?
     public static function canViewAny(): bool
     {
-        return auth()->user()->role === 'admin';
+        return auth()->user()->hasAnyRole(['Super Admin', 'Admin Entitas']);
     }
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedRectangleStack;

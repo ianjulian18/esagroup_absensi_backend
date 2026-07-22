@@ -11,6 +11,85 @@ use Illuminate\Support\Facades\ValidationException;
 
 class ApiAttendanceController extends Controller
 {
+    // Helper untuk mapping hari Bahasa Inggris ke Bahasa Indonesia
+    private function getIndonesianDay()
+    {
+        $days = [
+            'Monday' => 'Senin',
+            'Tuesday' => 'Selasa',
+            'Wednesday' => 'Rabu',
+            'Thursday' => 'Kamis',
+            'Friday' => 'Jumat',
+            'Saturday' => 'Sabtu',
+            'Sunday' => 'Minggu',
+        ];
+        return $days[now()->format('l')] ?? 'Senin';
+    }
+
+    // Helper untuk mendapatkan Jadwal Roster Hari Ini
+    private function getTodaySchedule($user)
+    {
+        // 1. Cek Itinerary Spesifik (Individual Override)
+        $todayStr = now()->toDateString();
+        $itinerary = \App\Models\Itinerary::with('workingHour')
+            ->where('user_id', $user->id)
+            ->where('date', $todayStr)
+            ->first();
+
+        if ($itinerary) {
+            return (object) [
+                'type' => 'individual_override',
+                'working_hour' => $itinerary->workingHour,
+                'late_tolerance' => 15, // Default for now, can be added to Itinerary if needed
+                'routing_type' => $itinerary->routing_type,
+                'stores' => $itinerary->stores ?? [],
+                'is_first_visit_locked' => $itinerary->is_first_visit_locked, // Mengikuti settingan dari Itinerary spesifik
+            ];
+        }
+
+        // 2. Fallback ke Aturan Working Group
+        if (!$user->working_group_id) {
+            return null; // Fallback ke logika lama jika user tidak punya grup
+        }
+
+        $user->load(['workingGroup.schedules.workingHour', 'workingGroup.defaultWorkingHour']);
+        $group = $user->workingGroup;
+
+        if (!$group) return null;
+
+        // Cek apakah tanggal mulai berlaku (date_applied) sudah lewat atau sama dengan hari ini
+        $todayDate = now()->toDateString();
+        if ($group->date_applied && $todayDate < $group->date_applied) {
+            return null; // Aturan grup belum aktif, fallback ke default/kosong
+        }
+
+        $today = $this->getIndonesianDay();
+        
+        // Cari jadwal khusus untuk hari ini (Days Applied)
+        $schedule = $group->schedules->where('day_of_week', $today)->first();
+
+        if ($schedule) {
+            return (object) [
+                'type' => 'daily_override',
+                'working_hour' => $schedule->workingHour,
+                'late_tolerance' => $schedule->late_tolerance,
+                'routing_type' => $schedule->routing_type,
+                'stores' => $schedule->stores ?? [], // array nama toko
+                'is_first_visit_locked' => $group->is_first_visit_locked, // Ambil dari grup
+            ];
+        }
+
+        // Fallback ke Aturan General (Baseline)
+        return (object) [
+            'type' => 'default_baseline',
+            'working_hour' => $group->defaultWorkingHour,
+            'late_tolerance' => $group->default_late_tolerance,
+            'routing_type' => 'bebas_visit', // default
+            'stores' => $group->default_stores ?? [],
+            'is_first_visit_locked' => $group->is_first_visit_locked,
+        ];
+    }
+
     // RUMUS PENGHITUNG JARAK (Haversine Formula)
     private function calculateDistance($lat1, $lon1, $lat2, $lon2) {
         $earthRadius = 6371000; // Radius bumi dalam satuan meter
@@ -32,27 +111,34 @@ class ApiAttendanceController extends Controller
     // 1. FUNGSI LOGIN (Bisa pakai Email, NIK, atau NIP)
     public function login(Request $request)
     {
-        // Validasi diubah: email diubah menjadi string (bukan format @mail) agar NIK/NIP bisa masuk
         $request->validate([
             'email' => 'required|string',
             'password' => 'required',
         ]);
 
-        // Cerdas mencari user: Cocokkan dengan Email, ATAU NIK, ATAU NIP
-        $user = User::with('location')
+        $user = User::with(['location', 'entity', 'principals', 'roles'])
             ->where('email', $request->email)
             ->orWhere('nik', $request->email)
             ->orWhere('nip', $request->email)
             ->first();
 
-        // Cek kecocokan password
         if (! $user || ! Hash::check($request->password, $user->password)) {
             return response()->json(['message' => 'Email/NIK/NIP atau password salah.'], 401);
         }
 
-        // Cek proteksi karyawan resign
         if ($user->is_resign == 1) { 
             return response()->json(['message' => 'Maaf, Anda sudah tidak bekerja lagi.'], 403); 
+        }
+
+        $incomingDeviceId = $request->input('device_id');
+        if ($incomingDeviceId) {
+            if (empty($user->device_id)) {
+                $user->update(['device_id' => $incomingDeviceId]);
+            } else if ($user->device_id !== $incomingDeviceId) {
+                return response()->json([
+                    'message' => 'Akun ini sudah terikat dengan perangkat lain. Hubungi Admin jika Anda ganti HP.'
+                ], 403);
+            }
         }
 
         $token = $user->createToken('flutter-token')->plainTextToken;
@@ -66,7 +152,15 @@ class ApiAttendanceController extends Controller
                 'email' => $user->email,
                 'nik' => $user->nik,
                 'nip' => $user->nip,
-                'role' => $user->role ?? 'karyawan',
+                'role' => $user->roles->first()->name ?? $user->role ?? 'karyawan',
+                'entity_id' => $user->entity_id,
+                'entity_name' => $user->entity ? $user->entity->name : 'Unknown Entity',
+                'principals' => $user->principals->map(function ($principal) {
+                    return [
+                        'id' => $principal->id,
+                        'name' => $principal->name,
+                    ];
+                }),
                 'office_latitude' => $user->location ? (float)$user->location->latitude : -7.2356163,
                 'office_longitude' => $user->location ? (float)$user->location->longitude : 112.73303,
                 'max_radius' => $user->location ? (float)$user->location->radius : 50.0,
@@ -75,10 +169,9 @@ class ApiAttendanceController extends Controller
         ]);
     }
 
-    // 2. FUNGSI PROSES ABSEN (GEOFENCING DINAMIS)
+    // 2. FUNGSI PROSES ABSEN (GEOFENCING DINAMIS + ROSTER)
     public function scan(Request $request)
     {
-        // 1. Validasi Input (Wajib kirim kordinat dan file foto)
         $request->validate([
             'latitude' => 'required|string',
             'longitude' => 'required|string',
@@ -86,40 +179,58 @@ class ApiAttendanceController extends Controller
         ]);
 
         $user = $request->user();
-        
-        // Pastikan relasi location terpanggil untuk validasi backend
         $user->load('location');
 
-        // Tarik lokasi dinamis karyawan untuk validasi jarak di backend
+        $schedule = $this->getTodaySchedule($user);
+        
         $officeLat = $user->location ? (float)$user->location->latitude : -7.2356163;
         $officeLon = $user->location ? (float)$user->location->longitude : 112.73303;
         $maxRadius = $user->location ? (float)$user->location->radius : 50.0;
 
-        // 2. CEK RADAR JARAK
+        // Logika First Visit Lock (Jika Wajib Absen di Toko Pertama)
+        if ($schedule && $schedule->is_first_visit_locked && !empty($schedule->stores)) {
+            $firstStoreName = $schedule->stores[0];
+            $firstStore = \App\Models\Store::where('name', $firstStoreName)->first();
+            if ($firstStore) {
+                $officeLat = (float)$firstStore->latitude;
+                $officeLon = (float)$firstStore->longitude;
+            }
+        }
+
         $distance = $this->calculateDistance($request->latitude, $request->longitude, $officeLat, $officeLon);
 
         if ($distance > $maxRadius) {
             return response()->json([
-                'message' => 'Anda berada di luar jangkauan kantor! Jarak Anda: ' . round($distance) . ' meter dari batas ' . $maxRadius . ' meter.'
+                'message' => 'Anda berada di luar jangkauan radius (' . round($distance) . 'm) dari batas ' . $maxRadius . 'm.'
             ], 403);
         }
 
-        // 3. PROSES SIMPAN FOTO KE SERVER
         $photoPath = null;
         if ($request->hasFile('photo')) {
             $photoPath = $request->file('photo')->store('attendances', 'public');
         }
 
-        // 4. PROSES SIMPAN ABSENSI KE DATABASE
         $today = now()->toDateString();
         $timeNow = now()->toTimeString();
 
         $attendance = Attendance::where('user_id', $user->id)->where('date', $today)->first();
 
-        // JIKA BELUM ABSEN MASUK
         if (!$attendance) {
+            // Tentukan status Terlambat berdasarkan Roster
             $status = 'hadir';
-            if (now()->format('H:i') > '08:00') {
+            $startTime = '08:00:00';
+            $lateTolerance = 15;
+
+            if ($schedule && $schedule->working_hour) {
+                $startTime = $schedule->working_hour->start_time; // Misal: 08:00:00
+                $lateTolerance = $schedule->late_tolerance;
+            }
+
+            // Gabungkan tanggal hari ini dengan waktu mulai shift
+            $shiftStartTime = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $today . ' ' . $startTime);
+            $limitTime = $shiftStartTime->addMinutes($lateTolerance);
+
+            if (now()->isAfter($limitTime)) {
                 $status = 'terlambat';
             }
 
@@ -130,19 +241,18 @@ class ApiAttendanceController extends Controller
                 'status' => $status,
                 'latitude' => $request->latitude,
                 'longitude' => $request->longitude,
-                'photo_in' => $photoPath, // Simpan foto masuk
+                'photo_in' => $photoPath,
             ]);
 
             return response()->json(['message' => 'Berhasil absen masuk!', 'data' => $newAttendance], 201);
         }
 
-        // JIKA SUDAH ABSEN MASUK & BELUM ABSEN PULANG
         if ($attendance && $attendance->clock_out === null) {
             $attendance->update([
                 'clock_out' => $timeNow,
-                'latitude' => $request->latitude, // Perbarui kordinat saat pulang
+                'latitude' => $request->latitude,
                 'longitude' => $request->longitude,
-                'photo_out' => $photoPath, // Simpan foto pulang
+                'photo_out' => $photoPath,
             ]);
 
             return response()->json(['message' => 'Berhasil absen pulang! Hati-hati di jalan.', 'data' => $attendance], 200);
@@ -156,7 +266,6 @@ class ApiAttendanceController extends Controller
     {
         $user = $request->user();
         
-        // Ambil riwayat absen karyawan yang login (30 hari terakhir agar database tidak berat)
         $history = Attendance::with(['visits','user.location'])
             -> where('user_id', $user->id)
             ->orderBy('date', 'desc')
@@ -169,7 +278,7 @@ class ApiAttendanceController extends Controller
         ], 200);
     }
 
-    // --- FUNGSI BARU: VISIT IN ---
+    // --- FUNGSI BARU: VISIT IN (DENGAN LOGIKA ROSTER) ---
     public function visitIn(Request $request)
     {
         $request->validate([
@@ -185,7 +294,6 @@ class ApiAttendanceController extends Controller
 
         $attendance = Attendance::where('user_id', $user->id)->where('date', $today)->first();
 
-        // Cek aturan alur absen
         if (!$attendance) {
             return response()->json(['message' => 'Anda harus Check-In terlebih dahulu sebelum melakukan Visit.'], 403);
         }
@@ -196,6 +304,41 @@ class ApiAttendanceController extends Controller
         $activeVisit = $attendance->visits()->where('status', 'in_progress')->first();
         if ($activeVisit) {
             return response()->json(['message' => 'Selesaikan dulu visit di: ' . $activeVisit->location_name], 403);
+        }
+
+        // LOGIKA ROSTER: Validasi Routing Aktif / Bebas Visit
+        $schedule = $this->getTodaySchedule($user);
+        if ($schedule && !empty($schedule->stores)) {
+            $allowedStores = $schedule->stores;
+            $requestedStore = $request->location_name;
+
+            // Jika Routing Aktif, cek urutan
+            if ($schedule->routing_type === 'routing_aktif') {
+                // Cari toko mana yang harus dikunjungi selanjutnya
+                // Berapa visit yang sudah completed hari ini?
+                $completedVisitsCount = $attendance->visits()->where('status', 'completed')->count();
+                
+                if ($completedVisitsCount < count($allowedStores)) {
+                    $expectedStore = $allowedStores[$completedVisitsCount];
+                    if (strcasecmp($requestedStore, $expectedStore) !== 0) {
+                        return response()->json([
+                            'message' => 'Routing Aktif (Terkunci): Tujuan Anda selanjutnya seharusnya adalah ' . $expectedStore
+                        ], 403);
+                    }
+                } else {
+                    // Jika sudah visit semua toko di jadwal, mungkin boleh visit bebas?
+                    // Untuk saat ini, asumsikan ditolak jika lewat batas
+                     return response()->json([
+                        'message' => 'Routing Aktif (Terkunci): Anda sudah menyelesaikan semua rute visit wajib hari ini.'
+                    ], 403);
+                }
+            } else {
+                // Jika Bebas Visit, pastikan minimal toko ada di daftar (opsional)
+                // Kita izinkan jika memang bebas visit, tapi jika ingin dikunci ke daftar:
+                // if (!in_array($requestedStore, $allowedStores)) {
+                //    return response()->json(['message' => 'Toko tidak ada dalam jadwal Anda hari ini.'], 403);
+                // }
+            }
         }
 
         $photoPath = $request->file('photo')->store('visits', 'public');
@@ -213,7 +356,7 @@ class ApiAttendanceController extends Controller
         return response()->json(['message' => 'Berhasil Visit In di ' . $request->location_name, 'data' => $visit], 201);
     }
 
-    // --- FUNGSI BARU: VISIT OUT ---
+    // --- FUNGSI BARU: VISIT OUT (DENGAN HITUNG DURASI) ---
     public function visitOut(Request $request)
     {
         $request->validate([
@@ -231,15 +374,24 @@ class ApiAttendanceController extends Controller
         }
 
         $photoPath = $request->file('photo')->store('visits', 'public');
+        
+        // Hitung durasi visit dalam menit
+        $visitIn = \Carbon\Carbon::parse($visit->visit_in);
+        $visitOut = \Carbon\Carbon::parse($timeNow);
+        $durationMinutes = $visitIn->diffInMinutes($visitOut);
 
         $visit->update([
             'visit_out' => $timeNow,
             'latitude_out' => $request->latitude,
             'longitude_out' => $request->longitude,
             'photo_out' => $photoPath,
-            'status' => 'completed'
+            'status' => 'completed',
+            'duration_minutes' => $durationMinutes // Simpan durasi jika kolom ada di DB (asumsi ditambahkan nanti jika belum ada)
         ]);
 
-        return response()->json(['message' => 'Visit Out berhasil. Durasi visit tercatat.', 'data' => $visit], 200);
+        return response()->json([
+            'message' => 'Visit Out berhasil. Durasi visit: ' . $durationMinutes . ' menit.', 
+            'data' => $visit
+        ], 200);
     }
 }

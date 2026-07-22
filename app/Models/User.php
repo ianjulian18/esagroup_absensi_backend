@@ -11,12 +11,13 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
-#[Fillable(['nik','nip','name', 'email', 'password', 'role', 'is_resign'])]
+use Spatie\Permission\Traits\HasRoles;
+
+#[Fillable(['nik','nip','name', 'email', 'password', 'role', 'is_resign', 'entity_id'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
-    /** @use HasFactory<UserFactory> */
-    use HasApiTokens, HasFactory, Notifiable;
+    use HasApiTokens, HasFactory, Notifiable, HasRoles, \App\Models\Traits\HasTenantScope;
 
     /**
      * Get the attributes that should be cast.
@@ -44,5 +45,19 @@ class User extends Authenticatable
     public function workingHour(): \Illuminate\Database\Eloquent\Relations\BelongsTo
     {
         return $this->belongsTo(WorkingHour::class);
+    }
+    public function workingGroup()
+    {
+        return $this->belongsTo(WorkingGroup::class);
+    }
+
+    public function entity()
+    {
+        return $this->belongsTo(Entity::class);
+    }
+
+    public function principals()
+    {
+        return $this->belongsToMany(Principal::class, 'principal_user');
     }
 }

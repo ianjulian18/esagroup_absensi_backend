@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class Attendance extends Model
 {
-    use HasFactory;
+    use HasFactory, \App\Models\Traits\HasTenantScope;
 
     // Mengizinkan kolom-kolom ini diisi data secara otomatis
     protected $fillable = [

@@ -33,14 +33,10 @@ class UsersTable
                 TextColumn::make('email')
                     ->searchable(),
 
-                TextColumn::make('role')
+                TextColumn::make('roles.name')
                     ->badge()
-                    ->color(fn (string $state): string => match ($state) {
-                        'admin' => 'success',
-                        'karyawan' => 'warning',
-                        default => 'gray',
-                    })
-                    ->label('Jabatan'),
+                    ->color('success')
+                    ->label('Jabatan (Roles)'),
 
                 // --- TAMBAHAN BARU: Menampilkan master data di tabel ---
                 TextColumn::make('location.name')

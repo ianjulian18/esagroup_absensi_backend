@@ -8,6 +8,7 @@ use Filament\Actions\EditAction;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Filament\Tables\Columns\ImageColumn;
+use pxlrbt\FilamentExcel\Actions\Tables\ExportBulkAction;
 
 class AttendancesTable
 {
@@ -80,6 +81,7 @@ class AttendancesTable
             ->bulkActions([
                 BulkActionGroup::make([
                     DeleteBulkAction::make(),
+                    ExportBulkAction::make(),
                 ]),
             ])
             ->defaultSort('date', 'desc');

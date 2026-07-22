@@ -53,14 +53,12 @@ class UserForm
                     ->minLength(8)
                     ->dehydrated(false),
 
-                Select::make('role')
-                    ->label('Jabatan')
-                    ->options([
-                        'admin' => 'Admin',
-                        'karyawan' => 'Karyawan',
-                    ])
-                    ->required()
-                    ->default('karyawan'),
+                Select::make('roles')
+                    ->label('Jabatan (Roles)')
+                    ->multiple()
+                    ->relationship('roles', 'name')
+                    ->preload()
+                    ->required(),
 
                 Select::make('location_id')
                     ->relationship('location', 'name')
@@ -69,6 +67,11 @@ class UserForm
                 Select::make('working_hour_id')
                     ->relationship('workingHour', 'name')
                     ->label('Jam Kerja (Shift)'),
+                Select::make('working_group_id')
+                    ->relationship('workingGroup', 'name')
+                    ->label('Masukkan ke Grup Kerja')
+                    ->searchable()
+                    ->preload(),
 
                 Toggle::make('is_location_locked')
                     ->label('Kunci Lokasi (Geofencing)')

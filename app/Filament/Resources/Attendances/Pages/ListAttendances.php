@@ -13,6 +13,12 @@ class ListAttendances extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
+            \pxlrbt\FilamentExcel\Actions\Pages\ExportAction::make()
+                ->exports([
+                    \pxlrbt\FilamentExcel\Exports\ExcelExport::make()
+                        ->fromTable()
+                        ->withFilename('Laporan_Absensi_' . date('Y-m-d'))
+                ]),
             CreateAction::make(),
         ];
     }
